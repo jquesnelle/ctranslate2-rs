@@ -1,0 +1,6 @@
+/.vscode
+/models
+/env
+/venv
+target/
+Cargo.lock

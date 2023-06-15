@@ -1,0 +1,7 @@
+[package]
+name = "ctranslate2-rs-generator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ctranslate2-rs = { path = "../../", features = ["cuda"] }
