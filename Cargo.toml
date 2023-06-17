@@ -1,10 +1,10 @@
 [package]
 name = "ctranslate2-rs"
 description = "Rust bindings for CTranslate2"
-version = "3.16.0"
+version = "3.16.0-1"
 edition = "2021"
 license = "MIT"
-author = "Jeffrey Quesnelle <jq@jeffq.com>"
+authors = ["Jeffrey Quesnelle <jq@jeffq.com>"]
 keywords = ["ctranslate2"]
 
 [dependencies]

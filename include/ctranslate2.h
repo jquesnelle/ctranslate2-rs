@@ -2,26 +2,93 @@
 
 #include <chrono>
 #include <future>
-#include <string>
-#include <unordered_map>
 #include <variant>
+#include <string>
 #include <vector>
+
+#include "rust/cxx.h"
 
 #include "ctranslate2/replica_pool.h"
 #include "ctranslate2/generator.h"
 
-#include "rust/cxx.h"
-
 class GeneratorWrapper;
-
+template <class CPPType, class RustType>
+class VecVec;
+typedef VecVec<std::string, rust::String> VecVecString;
+typedef VecVec<size_t, size_t> VecVecUsize;
 #include "ctranslate2-rs/src/lib.rs.h"
 
-using StringOrMap = std::variant<std::string, std::unordered_map<std::string, std::string>>;
-using Tokens = std::vector<std::string>;
-using Ids = std::vector<size_t>;
-using BatchTokens = std::vector<Tokens>;
-using BatchIds = std::vector<Ids>;
-using EndToken = std::variant<std::string, std::vector<std::string>, std::vector<size_t>>;
+template <class FromVectorType, class ToVectorType>
+static ToVectorType ConvertVector(const FromVectorType &vec)
+{
+    ToVectorType ret;
+    ret.reserve(vec.size());
+    for (const auto &item : vec)
+        ret.emplace_back(item);
+    return ret;
+}
+
+template <class FromVectorType, class ToVectorType>
+static ToVectorType ConvertVector(FromVectorType &&vec)
+{
+    ToVectorType ret;
+    ret.reserve(vec.size());
+    for (auto &item : vec)
+        ret.emplace_back(std::move(item));
+    return ret;
+}
+
+template <class CPPType, class RustType>
+class VecVec
+{
+public:
+    using DataType = std::vector<std::vector<CPPType>>;
+
+    VecVec() = default;
+    VecVec(const VecVec &) = default;
+    VecVec(VecVec &&) = default;
+    ~VecVec() = default;
+    VecVec &operator=(const VecVec &) = default;
+    VecVec &operator=(VecVec &&) = default;
+
+    VecVec(const rust::Vec<RustType>& rhs) : mData(ConvertVector(rhs)) {}
+    VecVec(rust::Vec<RustType>&& rhs) : mData(ConvertVector(std::move(rhs))) {}
+    VecVec(const DataType &rhs) : mData(rhs) {}
+    VecVec(DataType &&rhs) : mData(std::move(rhs)) {}
+
+    rust::Vec<RustType> at(size_t index) const
+    {
+        rust::Vec<RustType> ret;
+        for (const auto &item : mData.at(index))
+            ret.push_back(item);
+        return ret;
+    }
+
+    void push_back(rust::Vec<RustType> data)
+    {
+        mData.emplace_back(ConvertVector<rust::Vec<RustType>, std::vector<CPPType>>(data));
+    }
+
+    void clear() { mData.clear(); }
+    void reserve(size_t sz) { mData.reserve(sz); }
+
+    size_t len() const { return mData.size(); }
+    bool empty() const { return mData.empty(); }
+    const DataType &data() const { return mData; }
+
+private:
+    DataType mData;
+};
+
+std::unique_ptr<VecVecString> new_vec_vec_string()
+{
+    return std::make_unique<VecVecString>(VecVecString());
+}
+
+std::unique_ptr<VecVecUsize> new_vec_vec_usize()
+{
+    return std::make_unique<VecVecUsize>(VecVecUsize());
+}
 
 class ComputeTypeResolver
 {
@@ -78,7 +145,6 @@ public:
         if (!_done)
         {
             {
-                py::gil_scoped_release release;
                 try
                 {
                     _result = _future.get();
@@ -142,31 +208,25 @@ class ReplicaPoolHelper
 public:
     ReplicaPoolHelper(const std::string &model_path,
                       const std::string &device,
-                      const std::variant<int, std::vector<int>> &device_index,
-                      const StringOrMap &compute_type,
+                      const std::vector<int> &device_indices,
+                      const std::string &compute_type,
                       size_t inter_threads,
                       size_t intra_threads,
-                      long max_queued_batches)
-        : _model_loader(std::make_shared<ctranslate2::models::ModelFileReader>(model))
+                      int max_queued_batches)
+        : _model_loader(std::make_shared<ctranslate2::models::ModelFileReader>(model_path))
     {
-        _model_loader.device = str_to_device(device);
-        _model_loader.device_indices = std::visit(DeviceIndexResolver(), device_index);
-        _model_loader.compute_type = std::visit(ComputeTypeResolver(device), compute_type);
+        _model_loader.device = ctranslate2::str_to_device(device);
+        _model_loader.device_indices = device_indices;
+        _model_loader.compute_type = ctranslate2::str_to_compute_type(compute_type);
         _model_loader.num_replicas_per_device = inter_threads;
 
         _pool_config.num_threads_per_replica = intra_threads;
-        _pool_config.max_queued_batches = max_queued_batches;
+        _pool_config.max_queued_batches = (long)max_queued_batches;
 
         _pool = std::make_unique<T>(_model_loader, _pool_config);
     }
 
-    ~ReplicaPoolHelper()
-    {
-        pybind11::gil_scoped_release nogil;
-        _pool.reset();
-    }
-
-    std::string device() const
+    rust::String device() const
     {
         return device_to_str(_model_loader.device);
     }
@@ -202,67 +262,115 @@ class GeneratorWrapper : public ReplicaPoolHelper<ctranslate2::Generator>
 public:
     using ReplicaPoolHelper::ReplicaPoolHelper;
 
-    std::variant<std::vector<ctranslate2::GenerationResult>,
-                 std::vector<AsyncResult<ctranslate2::GenerationResult>>>
-    generate_batch(const BatchTokens &tokens,
-                   size_t max_batch_size,
-                   const std::string &batch_type_str,
-                   bool asynchronous,
-                   size_t beam_size,
-                   float patience,
-                   size_t num_hypotheses,
-                   float length_penalty,
-                   float repetition_penalty,
-                   size_t no_repeat_ngram_size,
-                   bool disable_unk,
-                   const std::optional<std::vector<std::vector<std::string>>> &suppress_sequences,
-                   const std::optional<EndToken> &end_token,
-                   bool return_end_token,
-                   size_t max_length,
-                   size_t min_length,
-                   const std::optional<std::vector<std::string>> &static_prompt,
-                   bool cache_static_prompt,
-                   bool include_prompt_in_result,
-                   bool return_scores,
-                   bool return_alternatives,
-                   float min_alternative_expansion_prob,
-                   size_t sampling_topk,
-                   float sampling_topp,
-                   float sampling_temperature,
-                   std::function<bool(ctranslate2::GenerationStepResult)> callback)
+    rust::Vec<GenerationResult> generate_batch(std::unique_ptr<VecVecString> tokens,
+                                               size_t max_batch_size,
+                                               rust::Str batch_type_str,
+                                               rust::Box<GenerationOptions> options) const
     {
-        if (tokens.empty())
-            return {};
+        return _generate_batch(std::move(tokens), max_batch_size, batch_type_str, std::move(options), std::nullopt);
+    }
 
-        ctranslate2::BatchType batch_type = ctranslate2::str_to_batch_type(batch_type_str);
-        ctranslate2::GenerationOptions options;
-        options.beam_size = beam_size;
-        options.patience = patience;
-        options.length_penalty = length_penalty;
-        options.repetition_penalty = repetition_penalty;
-        options.no_repeat_ngram_size = no_repeat_ngram_size;
-        options.disable_unk = disable_unk;
-        options.sampling_topk = sampling_topk;
-        options.sampling_topp = sampling_topp;
-        options.sampling_temperature = sampling_temperature;
-        options.max_length = max_length;
-        options.min_length = min_length;
-        options.num_hypotheses = num_hypotheses;
-        options.return_end_token = return_end_token;
-        options.return_scores = return_scores;
-        options.return_alternatives = return_alternatives;
-        options.cache_static_prompt = cache_static_prompt;
-        options.include_prompt_in_result = include_prompt_in_result;
-        options.min_alternative_expansion_prob = min_alternative_expansion_prob;
-        options.callback = std::move(callback);
-        if (suppress_sequences)
-            options.suppress_sequences = suppress_sequences.value();
-        if (end_token)
-            options.end_token = end_token.value();
-        if (static_prompt)
-            options.static_prompt = static_prompt.value();
+    rust::Vec<GenerationResult> generate_batch_with_callback(std::unique_ptr<VecVecString> tokens,
+                                                             size_t max_batch_size,
+                                                             rust::Str batch_type_str,
+                                                             rust::Box<GenerationOptions> options,
+                                                             rust::Fn<bool(GenerationStepResult)> callback) const
+    {
+        return _generate_batch(std::move(tokens), max_batch_size, batch_type_str, std::move(options), std::move(callback));
+    }
 
-        auto futures = _pool->generate_batch_async(tokens, options, max_batch_size, batch_type);
-        return maybe_wait_on_futures(std::move(futures), asynchronous);
+private:
+    rust::Vec<GenerationResult> _generate_batch(std::unique_ptr<VecVecString> tokens,
+                                                size_t max_batch_size,
+                                                rust::Str batch_type_str,
+                                                rust::Box<GenerationOptions> options,
+                                                std::optional<rust::Fn<bool(GenerationStepResult)>> callback) const
+    {
+        auto futures = _generate_batch_async(std::move(tokens), max_batch_size, std::move(batch_type_str), std::move(options), std::move(callback));
+        auto results = wait_on_futures(std::move(futures));
+
+        rust::Vec<GenerationResult> ret;
+        for (auto &result : results)
+            ret.emplace_back(GenerationResult{
+                std::make_unique<VecVecString>(VecVecString(std::move(result.sequences))),
+                std::make_unique<VecVecUsize>(VecVecUsize(std::move(result.sequences_ids))),
+                ConvertVector<std::vector<float>, rust::Vec<float>>(std::move(result.scores))});
+        return ret;
+    }
+
+    std::vector<std::future<ctranslate2::GenerationResult>> _generate_batch_async(std::unique_ptr<VecVecString> tokens,
+                                                                                  size_t max_batch_size,
+                                                                                  rust::Str batch_type_str,
+                                                                                  rust::Box<GenerationOptions> options,
+                                                                                  std::optional<rust::Fn<bool(GenerationStepResult)>> callback) const
+    {
+        if (!tokens || tokens->empty())
+            return std::vector<std::future<ctranslate2::GenerationResult>>{};
+
+        ctranslate2::BatchType batch_type =
+            ctranslate2::str_to_batch_type((std::string)batch_type_str);
+        return _pool->generate_batch_async(
+            tokens->data(), ConvertGenerationOptions(std::move(options), std::move(callback)), max_batch_size, batch_type);
+    }
+
+    static ctranslate2::GenerationOptions ConvertGenerationOptions(rust::Box<GenerationOptions> options, std::optional<rust::Fn<bool(GenerationStepResult)>> callback)
+    {
+        ctranslate2::GenerationOptions ret;
+        ret.beam_size = options->beam_size;
+        ret.cache_static_prompt = options->cache_static_prompt;
+        ret.disable_unk = options->disable_unk;
+        ret.end_token = ConvertVector<rust::Vec<rust::String>, std::vector<std::string>>(options->end_token);
+        ret.include_prompt_in_result = options->include_prompt_in_result;
+        ret.length_penalty = options->length_penalty;
+        ret.max_length = options->max_length;
+        ret.min_alternative_expansion_prob = options->min_alternative_expansion_prob;
+        ret.no_repeat_ngram_size = options->no_repeat_ngram_size;
+        ret.num_hypotheses = options->num_hypotheses;
+        ret.patience = options->patience;
+        ret.repetition_penalty = options->repetition_penalty;
+        ret.return_alternatives = options->return_alternatives;
+        ret.return_end_token = options->return_end_token;
+        ret.return_scores = options->return_scores;
+        ret.sampling_temperature = options->sampling_temperature;
+        ret.sampling_topk = options->sampling_topk;
+        ret.sampling_topp = options->sampling_topp;
+        ret.static_prompt = ConvertVector<rust::Vec<rust::String>, std::vector<std::string>>(options->static_prompt);
+        ret.suppress_sequences = options->suppress_sequences
+                                     ? options->suppress_sequences->data()
+                                     : std::vector<std::vector<std::string>>();
+        if (callback)
+        {
+            ret.callback = [callback](ctranslate2::GenerationStepResult result) -> bool
+            {
+                GenerationStepResult converted;
+                converted.batch_id = result.batch_id;
+                converted.is_last = result.is_last;
+                converted.log_prob = result.log_prob ? *result.log_prob : 0;
+                converted.log_prob_valid = result.log_prob.has_value();
+                converted.step = result.step;
+                converted.token_id = result.token_id;
+                return (*callback)(std::move(converted));
+            };
+        }
+        return ret;
     }
 };
+
+std::unique_ptr<GeneratorWrapper> new_generator_wrapper(
+    rust::Str model_path,
+    rust::Str device,
+    rust::Vec<int> device_indicies,
+    rust::Str compute_type,
+    size_t inter_threads,
+    size_t intra_threads,
+    int max_queued_batches)
+{
+    return std::make_unique<GeneratorWrapper>(
+        (std::string)model_path,
+        (std::string)device,
+        ConvertVector<rust::Vec<int>, std::vector<int>>(std::move(device_indicies)),
+        (std::string)compute_type,
+        inter_threads,
+        intra_threads,
+        max_queued_batches);
+}
