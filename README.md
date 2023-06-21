@@ -3,6 +3,14 @@
 Rust bindings for [CTranslate2](https://github.com/OpenNMT/CTranslate2)!
 This package directly builds and links the CTranslate2 library into your Rust application, producing an executable with no external dependencies.
 
+Due to the size of the CTranslate2 checkout a crate of this library cannot be published directly to crates.io (working on this!).
+To use, add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ctranslate2-rs = { git = "https://github.com/jquesnelle/ctranslate2-rs.git", features = ["cuda"] }
+```
+
 ### Acceleration
 
 CTranslate2 supports several different acceleration methods, such as CUDA and Accelerate.
