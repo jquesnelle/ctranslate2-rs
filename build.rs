@@ -3,7 +3,6 @@ use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-changed=include/ctranslate2.h");
-    println!("cargo:rerun-if-changed=src/lib.rs");
 
     #[cfg(all(target_os = "windows", target_env = "msvc"))]
     let cpp_17_flag = "/std:c++17";
@@ -89,11 +88,11 @@ fn main() {
     #[cfg(not(feature = "ruy"))]
     cmd.arg("-DWITH_CUDNN=OFF");
 
-    if let Some((_, value)) = env::vars().find(|(key, _)| key == "CTRANSLATE2_CUDNN_LIBRARIES") {
+    if let Some((_, value)) = env::vars().find(|(key, _)| key == "CUDNN_LIBRARIES") {
         cmd.arg(format!("-DCUDNN_LIBRARIES={value}"));
     }
 
-    if let Some((_, value)) = env::vars().find(|(key, _)| key == "CTRANSLATE2_CUDNN_INCLUDE_DIR") {
+    if let Some((_, value)) = env::vars().find(|(key, _)| key == "CUDNN_INCLUDE_DIR") {
         cmd.arg(format!("-DCUDNN_INCLUDE_DIR={value}"));
     }
 

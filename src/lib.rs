@@ -1,11 +1,14 @@
-use std::str::FromStr;
-
 #[allow(unused_imports)]
 #[allow(dead_code)]
 use cxx::UniquePtr;
+use std::str::FromStr;
 
 #[cxx::bridge]
 pub mod ffi {
+    extern "Rust" {
+        type GenerateCallbackContext;
+    }
+
     struct GenerationStepResult {
         step: usize,
         batch_id: usize,
@@ -111,7 +114,8 @@ pub mod ffi {
             max_batch_size: usize,
             batch_type_str: &str,
             options: Box<GenerationOptions>,
-            callback: fn(result: GenerationStepResult) -> bool,
+            callback: fn(result: GenerationStepResult, context: &GenerateCallbackContext) -> bool,
+            context: Box<GenerateCallbackContext>,
         ) -> Result<Vec<GenerationResult>>;
         fn new_generator_wrapper(
             model_path: &str,
@@ -127,7 +131,17 @@ pub mod ffi {
 
 pub use ffi::{GenerationOptions, GenerationResult, GenerationStepResult};
 
+unsafe impl Sync for ffi::GeneratorWrapper {}
+unsafe impl Send for ffi::VecVecString {}
+unsafe impl Send for ffi::VecVecUsize {}
+unsafe impl Send for ffi::GeneratorWrapper {}
+
+#[derive(Debug)]
 pub struct CTranslate2Error(cxx::Exception);
+
+pub fn set_cuda_allocator_to_cub_caching() {
+    std::env::set_var("CT2_CUDA_ALLOCATOR", "cub_caching");
+}
 
 impl Default for GenerationOptions {
     fn default() -> GenerationOptions {
@@ -157,8 +171,10 @@ impl Default for GenerationOptions {
     }
 }
 
+#[derive(Debug)]
 pub struct ParseError(String);
 
+#[derive(Copy, Clone, Debug)]
 pub enum Device {
     CPU,
     CUDA,
@@ -186,6 +202,7 @@ impl FromStr for Device {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
 pub enum ComputeType {
     Default,
     Auto,
@@ -227,6 +244,7 @@ impl FromStr for ComputeType {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
 pub enum BatchType {
     Examples,
     Tokens,
@@ -269,6 +287,8 @@ pub struct Generator {
     generator: UniquePtr<ffi::GeneratorWrapper>,
 }
 
+pub struct GenerateCallbackContext(Box<dyn Fn(GenerationStepResult) -> bool>);
+
 impl Generator {
     pub fn new(
         model_path: &str,
@@ -304,33 +324,37 @@ impl Generator {
         self.generator.num_queued_batches()
     }
 
-    fn num_active_batches(&self) -> usize {
+    pub fn num_active_batches(&self) -> usize {
         self.generator.num_active_batches()
     }
 
-    fn generate_batch(
+    pub fn generate_batch<F>(
         &self,
         tokens: Vec<Vec<String>>,
         max_batch_size: usize,
         batch_type: BatchType,
         options: GenerationOptions,
-        callback: Option<fn(result: GenerationStepResult) -> bool>,
-    ) -> Result<Vec<GenerationResult>, CTranslate2Error> {
+        callback: Option<F>
+    ) -> Result<Vec<GenerationResult>, CTranslate2Error> where F: Fn(GenerationStepResult) -> bool + 'static {
         match callback {
-            Some(callback) => self.generator.generate_batch_with_callback(
+            Some(callback) => self.generator
+            .generate_batch_with_callback(
                 ffi::VecVecString::new_unique_from(tokens),
                 max_batch_size,
                 &batch_type.to_string(),
                 Box::new(options),
-                callback,
-            ),
-            None => self.generator.generate_batch(
+                |result: GenerationStepResult, context: &GenerateCallbackContext| context.0(result),
+                Box::new(GenerateCallbackContext(Box::new(callback))),
+            )
+            .map_err(|ex| CTranslate2Error(ex)),
+            None => self.generator
+            .generate_batch(
                 ffi::VecVecString::new_unique_from(tokens),
                 max_batch_size,
                 &batch_type.to_string(),
                 Box::new(options),
-            ),
+            )
+            .map_err(|ex| CTranslate2Error(ex))
         }
-        .map_err(|ex| CTranslate2Error(ex))
     }
 }

@@ -51,8 +51,8 @@ public:
     VecVec &operator=(const VecVec &) = default;
     VecVec &operator=(VecVec &&) = default;
 
-    VecVec(const rust::Vec<RustType>& rhs) : mData(ConvertVector(rhs)) {}
-    VecVec(rust::Vec<RustType>&& rhs) : mData(ConvertVector(std::move(rhs))) {}
+    VecVec(const rust::Vec<RustType> &rhs) : mData(ConvertVector(rhs)) {}
+    VecVec(rust::Vec<RustType> &&rhs) : mData(ConvertVector(std::move(rhs))) {}
     VecVec(const DataType &rhs) : mData(rhs) {}
     VecVec(DataType &&rhs) : mData(std::move(rhs)) {}
 
@@ -226,6 +226,11 @@ public:
         _pool = std::make_unique<T>(_model_loader, _pool_config);
     }
 
+    ~ReplicaPoolHelper()
+    {
+        _pool.reset();
+    }
+
     rust::String device() const
     {
         return device_to_str(_model_loader.device);
@@ -261,48 +266,50 @@ class GeneratorWrapper : public ReplicaPoolHelper<ctranslate2::Generator>
 {
 public:
     using ReplicaPoolHelper::ReplicaPoolHelper;
+    using CallbackFunction = rust::Fn<bool(GenerationStepResult, GenerateCallbackContext const &)>;
+    using Callback = std::pair<CallbackFunction, rust::Box<GenerateCallbackContext>>;
 
     rust::Vec<GenerationResult> generate_batch(std::unique_ptr<VecVecString> tokens,
                                                size_t max_batch_size,
                                                rust::Str batch_type_str,
                                                rust::Box<GenerationOptions> options) const
     {
-        return _generate_batch(std::move(tokens), max_batch_size, batch_type_str, std::move(options), std::nullopt);
+        auto futures = _generate_batch_async(std::move(tokens), max_batch_size, std::move(batch_type_str), ConvertGenerationOptions(std::move(options)));
+        auto results = wait_on_futures(std::move(futures));
+        return ConvertGenerationResults(std::move(results));
     }
 
     rust::Vec<GenerationResult> generate_batch_with_callback(std::unique_ptr<VecVecString> tokens,
                                                              size_t max_batch_size,
                                                              rust::Str batch_type_str,
                                                              rust::Box<GenerationOptions> options,
-                                                             rust::Fn<bool(GenerationStepResult)> callback) const
+                                                             CallbackFunction callback,
+                                                             rust::Box<GenerateCallbackContext> context) const
     {
-        return _generate_batch(std::move(tokens), max_batch_size, batch_type_str, std::move(options), std::move(callback));
+        auto converted = ConvertGenerationOptions(std::move(options));
+        converted.callback = [callback, rawContext = context.into_raw()](ctranslate2::GenerationStepResult result) -> bool
+        {
+            GenerationStepResult converted;
+            converted.batch_id = result.batch_id;
+            converted.is_last = result.is_last;
+            converted.log_prob = result.log_prob ? *result.log_prob : 0;
+            converted.log_prob_valid = result.log_prob.has_value();
+            converted.step = result.step;
+            converted.token_id = result.token_id;
+
+            return callback(std::move(converted), *rawContext);
+        };
+
+        auto futures = _generate_batch_async(std::move(tokens), max_batch_size, std::move(batch_type_str), std::move(converted));
+        auto results = wait_on_futures(std::move(futures));
+        return ConvertGenerationResults(std::move(results));
     }
 
 private:
-    rust::Vec<GenerationResult> _generate_batch(std::unique_ptr<VecVecString> tokens,
-                                                size_t max_batch_size,
-                                                rust::Str batch_type_str,
-                                                rust::Box<GenerationOptions> options,
-                                                std::optional<rust::Fn<bool(GenerationStepResult)>> callback) const
-    {
-        auto futures = _generate_batch_async(std::move(tokens), max_batch_size, std::move(batch_type_str), std::move(options), std::move(callback));
-        auto results = wait_on_futures(std::move(futures));
-
-        rust::Vec<GenerationResult> ret;
-        for (auto &result : results)
-            ret.emplace_back(GenerationResult{
-                std::make_unique<VecVecString>(VecVecString(std::move(result.sequences))),
-                std::make_unique<VecVecUsize>(VecVecUsize(std::move(result.sequences_ids))),
-                ConvertVector<std::vector<float>, rust::Vec<float>>(std::move(result.scores))});
-        return ret;
-    }
-
     std::vector<std::future<ctranslate2::GenerationResult>> _generate_batch_async(std::unique_ptr<VecVecString> tokens,
                                                                                   size_t max_batch_size,
                                                                                   rust::Str batch_type_str,
-                                                                                  rust::Box<GenerationOptions> options,
-                                                                                  std::optional<rust::Fn<bool(GenerationStepResult)>> callback) const
+                                                                                  ctranslate2::GenerationOptions &&options) const
     {
         if (!tokens || tokens->empty())
             return std::vector<std::future<ctranslate2::GenerationResult>>{};
@@ -310,10 +317,10 @@ private:
         ctranslate2::BatchType batch_type =
             ctranslate2::str_to_batch_type((std::string)batch_type_str);
         return _pool->generate_batch_async(
-            tokens->data(), ConvertGenerationOptions(std::move(options), std::move(callback)), max_batch_size, batch_type);
+            tokens->data(), std::move(options), max_batch_size, batch_type);
     }
 
-    static ctranslate2::GenerationOptions ConvertGenerationOptions(rust::Box<GenerationOptions> options, std::optional<rust::Fn<bool(GenerationStepResult)>> callback)
+    static ctranslate2::GenerationOptions ConvertGenerationOptions(rust::Box<GenerationOptions> options)
     {
         ctranslate2::GenerationOptions ret;
         ret.beam_size = options->beam_size;
@@ -338,20 +345,17 @@ private:
         ret.suppress_sequences = options->suppress_sequences
                                      ? options->suppress_sequences->data()
                                      : std::vector<std::vector<std::string>>();
-        if (callback)
-        {
-            ret.callback = [callback](ctranslate2::GenerationStepResult result) -> bool
-            {
-                GenerationStepResult converted;
-                converted.batch_id = result.batch_id;
-                converted.is_last = result.is_last;
-                converted.log_prob = result.log_prob ? *result.log_prob : 0;
-                converted.log_prob_valid = result.log_prob.has_value();
-                converted.step = result.step;
-                converted.token_id = result.token_id;
-                return (*callback)(std::move(converted));
-            };
-        }
+        return ret;
+    }
+
+    static rust::Vec<GenerationResult> ConvertGenerationResults(std::vector<ctranslate2::GenerationResult> &&results)
+    {
+        rust::Vec<GenerationResult> ret;
+        for (auto &result : results)
+            ret.emplace_back(GenerationResult{
+                std::make_unique<VecVecString>(VecVecString(std::move(result.sequences))),
+                std::make_unique<VecVecUsize>(VecVecUsize(std::move(result.sequences_ids))),
+                ConvertVector<std::vector<float>, rust::Vec<float>>(std::move(result.scores))});
         return ret;
     }
 };

@@ -1,7 +1,24 @@
 [package]
 name = "ctranslate2-rs-generator"
+authors = ["Jeffrey Quesnelle <jq@jeffq.com>"]
+description = "Generate text from decoder-only transformer models using CTranlsate2"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ctranslate2-rs = { path = "../../", features = ["cuda"] }
+clap = { version = "4.3.4", features = ["derive"] }
+ctranslate2-rs = { path = "../../" }
+tokenizers = "0.13.3"
+colored = "2.0.0"
+home = "0.5.5"
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[features]
+default = ["cuda"]
+mkl = ["ctranslate2-rs/mkl"]
+dnnl = ["ctranslate2-rs/dnnl"]
+accelerate = ["ctranslate2-rs/accelerate"]
+openblas = ["ctranslate2-rs/openblas"]
+ruy = ["ctranslate2-rs/ruy"]
+cuda = ["ctranslate2-rs/cuda"]
+cudnn = ["ctranslate2-rs/cudnn"]
