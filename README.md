@@ -17,3 +17,5 @@ If so, feel free to open an issue!
 The [text generation example](examples/generator) shows off CTranslate2's wide support of popular LLM model formats.
 Since it's Rust, the code can be fearlessly multithreaded.
 In the example, tokenization and printing is offloaded to a separate `tokio` task to gain optimal throughput while streaming new generated tokens.
+
+![](https://github.com/jquesnelle/ctranslate2-rs/blob/master/examples/generator/example.gif)
