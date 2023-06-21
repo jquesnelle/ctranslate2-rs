@@ -6,6 +6,8 @@ edition = "2021"
 license = "MIT"
 authors = ["Jeffrey Quesnelle <jq@jeffq.com>"]
 keywords = ["ctranslate2"]
+readme = "README.md"
+repository = "https://github.com/jquesnelle/ctranslate2-rs/"
 
 [dependencies]
 cxx = "1.0"
