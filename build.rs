@@ -18,6 +18,10 @@ fn main() {
     println!("cargo:rustc-link-lib=static=ctranslate2");
     println!("cargo:rustc-link-lib=static=cpu_features");
 
+    if env::var("DOCS_RS").is_ok() {
+        return;
+    }
+
     env::set_current_dir("CTranslate2").expect("Unable to change directory to CTranslate2");
     _ = std::fs::remove_dir_all("build");
     _ = std::fs::create_dir("build");
@@ -142,6 +146,7 @@ fn main() {
         .expect("Failed to copy cpu_features lib");
     }
 
-    let _ = std::fs::remove_dir_all("build");
+    _ = env::set_current_dir("../");
+    _ = std::fs::remove_dir_all("build");
 }
 
