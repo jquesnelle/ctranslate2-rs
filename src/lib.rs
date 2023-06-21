@@ -43,8 +43,10 @@ pub mod ffi {
         disable_unk: bool,
         // Disable the generation of some sequences of tokens.
         suppress_sequences: UniquePtr<VecVecString>,
-        // Stop the decoding on one of these tokens (defaults to the model EOS token).
+        // Stop the decoding on one of these tokens
         end_token: Vec<String>,
+        // If end_token is empty, top on the EOS token
+        empty_end_token_means_stop_on_eos_token: bool,
         // Include the end token in the result.
         return_end_token: bool,
         // Max length constraint
@@ -154,6 +156,7 @@ impl Default for GenerationOptions {
             disable_unk: false,
             suppress_sequences: ffi::new_vec_vec_string(),
             end_token: Vec::new(),
+            empty_end_token_means_stop_on_eos_token: true,
             return_end_token: false,
             max_length: 512,
             min_length: 0,

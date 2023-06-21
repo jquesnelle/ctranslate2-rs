@@ -6,11 +6,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-clap = { version = "4.3.4", features = ["derive"] }
+clap = { version = "4.3", features = ["derive"] }
+serde_json = "1"
 ctranslate2-rs = { path = "../../" }
 tokenizers = "0.13.3"
-colored = "2.0.0"
-home = "0.5.5"
+colored = "2"
+home = "0.5"
 tokio = { version = "1", features = ["rt", "macros"] }
 
 [features]

@@ -326,7 +326,8 @@ private:
         ret.beam_size = options->beam_size;
         ret.cache_static_prompt = options->cache_static_prompt;
         ret.disable_unk = options->disable_unk;
-        ret.end_token = ConvertVector<rust::Vec<rust::String>, std::vector<std::string>>(options->end_token);
+        if (!options->end_token.empty() || !options->empty_end_token_means_stop_on_eos_token)
+            ret.end_token = ConvertVector<rust::Vec<rust::String>, std::vector<std::string>>(options->end_token);
         ret.include_prompt_in_result = options->include_prompt_in_result;
         ret.length_penalty = options->length_penalty;
         ret.max_length = options->max_length;

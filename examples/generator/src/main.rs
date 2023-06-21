@@ -1,7 +1,7 @@
 use clap::Parser;
 use colored::*;
 use ctranslate2_rs::{
-    BatchType, ComputeType, Device, GenerationOptions, GenerationStepResult, Generator,
+    ffi, BatchType, ComputeType, Device, GenerationOptions, GenerationStepResult, Generator,
 };
 use std::{
     io::{stdout, Write},
@@ -71,7 +71,15 @@ struct Args {
 
     // Only output new tokens, nothing else
     #[arg(long)]
-    quiet: bool
+    quiet: bool,
+
+    // Replace \n in prompt with literal newline
+    #[arg(long, default_value_t = true)]
+    convert_prompt_newlines: bool,
+
+    // Ignore EOS token (keep generating)
+    #[arg(long)]
+    ignore_eos: bool,
 }
 
 #[tokio::main]
@@ -134,6 +142,7 @@ async fn main() {
     stdout().flush().unwrap();
     let generator = Generator::new(
         args.model_path
+            .clone()
             .into_os_string()
             .to_str()
             .unwrap_or_default(),
@@ -149,8 +158,13 @@ async fn main() {
         println!(" done.");
     }
 
+    let mut prompt = args.prompt;
+    if args.convert_prompt_newlines {
+        prompt = prompt.replace("\\n", "\n");
+    }
+
     let tokenized = tokenizer
-        .encode(args.prompt.clone(), args.add_special_tokens)
+        .encode(prompt.clone(), args.add_special_tokens)
         .unwrap()
         .get_tokens()
         .to_vec();
@@ -171,8 +185,22 @@ async fn main() {
     if let Some(repetition_penalty) = args.repetition_penalty {
         options.repetition_penalty = repetition_penalty;
     }
+    options.include_prompt_in_result = false;
+    if args.ignore_eos {
+        let mut config_path = args.model_path.clone();
+        config_path.push("config.json");
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
+        let eos_token = config.get("eos_token").unwrap().as_str().unwrap();
+        options.suppress_sequences = ffi::new_vec_vec_string();
+        options
+            .suppress_sequences
+            .as_mut()
+            .unwrap()
+            .push_back(vec![eos_token.to_string()]);
+    }
 
-    print!("{}", args.prompt.yellow());
+    print!("{}", prompt.yellow());
 
     let (tx, mut rx) = mpsc::channel::<usize>(args.max_new_tokens);
 
