@@ -141,5 +141,7 @@ fn main() {
         )
         .expect("Failed to copy cpu_features lib");
     }
+
+    let _ = std::fs::remove_dir_all("build");
 }
 
