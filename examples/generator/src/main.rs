@@ -6,8 +6,10 @@ use ctranslate2_rs::{
 use std::{
     io::{stdout, Write},
     path::PathBuf,
+    time::Instant,
 };
 use tokenizers::{tokenizer::Tokenizer, FromPretrainedParameters};
+use tokio::sync::mpsc;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -66,6 +68,10 @@ struct Args {
     // Maximum number of new tokens
     #[arg(long, default_value_t = 256)]
     max_new_tokens: usize,
+
+    // Only output new tokens, nothing else
+    #[arg(long)]
+    quiet: bool
 }
 
 #[tokio::main]
@@ -86,24 +92,28 @@ async fn main() {
         }
     }
 
-    print!("Loading tokenizer {0}...", args.tokenizer_name);
-    stdout().flush().unwrap();
+    if !args.quiet {
+        print!("Loading tokenizer {0}...", args.tokenizer_name);
+        stdout().flush().unwrap();
+    }
 
     let tokenizer_name = args.tokenizer_name;
     let tokenizer = tokio::task::spawn_blocking(move || {
         match Tokenizer::from_pretrained(&tokenizer_name, Some(options)) {
             Ok(tokenizer) => Some(tokenizer),
             Err(_) => {
-                println!("Unable to download tokenizer {0}", &tokenizer_name);
-                println!(
+                eprintln!("Unable to download tokenizer {0}", &tokenizer_name);
+                eprintln!(
                     "To download tokenizers from HuggingFace, pass an auth token via --hf-auth-token or log in with huggingface-cli"
                 );
-                println!("Get a token here: https://huggingface.co/settings/tokens");
+                eprintln!("Get a token here: https://huggingface.co/settings/tokens");
                 None
             }
         }
     }).await.unwrap().unwrap();
-    println!(" done.");
+    if !args.quiet {
+        println!(" done.");
+    }
 
     let compute_type: ComputeType = args.compute_type.parse().unwrap();
     let device: Device = args.device.parse().unwrap();
@@ -112,13 +122,15 @@ async fn main() {
         None => vec![0],
     };
 
-    print!(
-        "Loading {0} to {1}:{2:?} in {3}...",
-        args.model_path.display(),
-        device.to_string(),
-        device_indicies,
-        compute_type.to_string()
-    );
+    if !args.quiet {
+        print!(
+            "Loading {0} to {1}:{2:?} in {3}...",
+            args.model_path.display(),
+            device.to_string(),
+            device_indicies,
+            compute_type.to_string()
+        );
+    }
     stdout().flush().unwrap();
     let generator = Generator::new(
         args.model_path
@@ -133,17 +145,20 @@ async fn main() {
         1,
     )
     .unwrap();
-    println!(" done.");
+    if !args.quiet {
+        println!(" done.");
+    }
 
     let tokenized = tokenizer
         .encode(args.prompt.clone(), args.add_special_tokens)
         .unwrap()
         .get_tokens()
         .to_vec();
+    let num_prompt_tokens = tokenized.len();
 
     let mut options = GenerationOptions::default();
-    options.min_length = tokenized.len();
-    options.max_length = tokenized.len() + args.max_new_tokens;
+    options.min_length = num_prompt_tokens;
+    options.max_length = num_prompt_tokens + args.max_new_tokens;
     if let Some(top_k) = args.top_k {
         options.sampling_topk = top_k;
     }
@@ -159,7 +174,18 @@ async fn main() {
 
     print!("{}", args.prompt.yellow());
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<usize>(args.max_new_tokens);
+    let (tx, mut rx) = mpsc::channel::<usize>(args.max_new_tokens);
+
+    tokio::task::spawn(async move {
+        while let Some(token) = rx.recv().await {
+            if let Ok(decoded) = tokenizer.decode(vec![token as u32], true) {
+                print!("{decoded}");
+                stdout().flush().unwrap();
+            }
+        }
+    });
+
+    let start = Instant::now();
     let result = tokio::task::spawn_blocking(move || {
         generator.generate_batch(
             vec![tokenized],
@@ -171,16 +197,18 @@ async fn main() {
                 false
             }),
         )
-    });
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let duration = start.elapsed();
 
-    tokio::task::spawn(async move {
-        while let Some(token) = rx.recv().await {
-            if let Ok(decoded) = tokenizer.decode(vec![token as u32], true) {
-                print!("{decoded}");
-                stdout().flush().unwrap();
-            }
-        }
-    });
+    let num_generated_tokens = result[0].sequence_ids.at(0).unwrap().len() - num_prompt_tokens;
+    let tokens_per_second = num_generated_tokens as f32 / duration.as_secs_f32();
 
-    result.await.unwrap().unwrap();
+    if !args.quiet {
+        println!("");
+        println!("Number of generated tokens: {0}", num_generated_tokens);
+        println!("Tokens per second: {0}", tokens_per_second);
+    }
 }
